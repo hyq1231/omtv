@@ -1,0 +1,299 @@
+// @name 红牛资源
+// @version 1.0.0
+// @description 红牛资源 API 采集源
+
+const OmniBox = require("omnibox_sdk");
+const runner = require("spider_runner");
+
+const API = "https://www.hongniuzy2.com/api.php/provide/vod";
+
+module.exports = {
+  home,
+  category,
+  detail,
+  search,
+  play,
+};
+
+runner.run(module.exports);
+
+
+// ==================== HTTP ====================
+
+async function requestApi(params = {}) {
+  const query = new URLSearchParams(params).toString();
+  const url = query ? `${API}?${query}` : API;
+
+  const res = await OmniBox.request(url, {
+    method: "GET",
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/132 Safari/537.36",
+      "Accept": "application/json,text/plain,*/*",
+    },
+  });
+
+  if (!res || res.statusCode !== 200) {
+    throw new Error(`API请求失败: ${res?.statusCode || "unknown"}`);
+  }
+
+  try {
+    return JSON.parse(res.body || "{}");
+  } catch (e) {
+    throw new Error("API返回的数据不是有效JSON");
+  }
+}
+
+
+// ==================== 首页 ====================
+
+async function home(params, context) {
+  try {
+    const data = await requestApi({
+      ac: "videolist",
+      pg: 1,
+      pagesize: 20,
+    });
+
+    return {
+      class: (data.class || []).map((item) => ({
+        type_id: String(item.type_id),
+        type_name: item.type_name || "",
+      })),
+
+      list: (data.list || []).map(normalizeVod),
+    };
+  } catch (e) {
+    await OmniBox.log("error", `红牛 home 失败: ${e.message}`);
+
+    return {
+      class: [],
+      list: [],
+    };
+  }
+}
+
+
+// ==================== 分类 ====================
+
+async function category(params, context) {
+  try {
+    const page = Number(params?.page || 1);
+    const typeId =
+      params?.type_id ??
+      params?.tid ??
+      params?.id ??
+      "";
+
+    const data = await requestApi({
+      ac: "videolist",
+      t: typeId,
+      pg: page,
+      pagesize: 20,
+    });
+
+    return {
+      page,
+      pagecount: Number(data.pagecount || 0),
+      total: Number(data.total || 0),
+
+      list: (data.list || []).map(normalizeVod),
+    };
+  } catch (e) {
+    await OmniBox.log("error", `红牛 category 失败: ${e.message}`);
+
+    return {
+      page: Number(params?.page || 1),
+      pagecount: 0,
+      total: 0,
+      list: [],
+    };
+  }
+}
+
+
+// ==================== 搜索 ====================
+
+async function search(params, context) {
+  try {
+    const wd =
+      params?.wd ||
+      params?.keyword ||
+      params?.q ||
+      "";
+
+    if (!wd) {
+      return {
+        page: 1,
+        pagecount: 0,
+        total: 0,
+        list: [],
+      };
+    }
+
+    const page = Number(params?.page || 1);
+
+    const data = await requestApi({
+      ac: "videolist",
+      wd,
+      pg: page,
+      pagesize: 20,
+    });
+
+    return {
+      page,
+      pagecount: Number(data.pagecount || 0),
+      total: Number(data.total || 0),
+
+      list: (data.list || []).map(normalizeVod),
+    };
+  } catch (e) {
+    await OmniBox.log("error", `红牛 search 失败: ${e.message}`);
+
+    return {
+      page: Number(params?.page || 1),
+      pagecount: 0,
+      total: 0,
+      list: [],
+    };
+  }
+}
+
+
+// ==================== 详情 ====================
+
+async function detail(params, context) {
+  try {
+    const id =
+      params?.id ||
+      params?.vod_id ||
+      params?.ids;
+
+    if (!id) {
+      return {
+        list: [],
+      };
+    }
+
+    const data = await requestApi({
+      ac: "detail",
+      ids: id,
+    });
+
+    const item = data?.list?.[0];
+
+    if (!item) {
+      return {
+        list: [],
+      };
+    }
+
+    const vod = normalizeVod(item);
+
+    // 苹果CMS的播放线路
+    vod.vod_play_from = item.vod_play_from || "";
+    vod.vod_play_url = item.vod_play_url || "";
+
+    // 常见详情字段
+    vod.vod_content =
+      item.vod_content ||
+      item.vod_blurb ||
+      "";
+
+    vod.vod_actor = item.vod_actor || "";
+    vod.vod_director = item.vod_director || "";
+    vod.vod_area = item.vod_area || "";
+    vod.vod_year = item.vod_year || "";
+    vod.vod_lang = item.vod_lang || "";
+    vod.vod_duration = item.vod_duration || "";
+    vod.vod_class = item.vod_class || "";
+
+    return {
+      list: [vod],
+    };
+  } catch (e) {
+    await OmniBox.log("error", `红牛 detail 失败: ${e.message}`);
+
+    return {
+      list: [],
+    };
+  }
+}
+
+
+// ==================== 播放 ====================
+
+async function play(params, context) {
+  try {
+    /*
+     * detail 返回的 vod_play_url 通常是：
+     *
+     * 第1集$https://xxx/1.m3u8
+     * 第2集$https://xxx/2.m3u8
+     *
+     * 不同线路之间通常使用 $$$ 分隔。
+     */
+
+    const url =
+      params?.url ||
+      params?.play_url ||
+      params?.vod_play_url ||
+      "";
+
+    if (!url) {
+      return {
+        urls: [],
+      };
+    }
+
+    return {
+      urls: [url],
+      flag: params?.flag || "",
+      header: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/132 Safari/537.36",
+      },
+      parse: 0,
+    };
+  } catch (e) {
+    await OmniBox.log("error", `红牛 play 失败: ${e.message}`);
+
+    return {
+      urls: [],
+    };
+  }
+}
+
+
+// ==================== 数据转换 ====================
+
+function normalizeVod(item) {
+  return {
+    vod_id: String(item.vod_id ?? ""),
+    vod_name: item.vod_name || "",
+    vod_pic: item.vod_pic || "",
+    type_id: String(item.type_id ?? ""),
+    type_name: item.type_name || "",
+
+    vod_remarks: item.vod_remarks || "",
+    vod_year: item.vod_year || "",
+    vod_area: item.vod_area || "",
+    vod_lang: item.vod_lang || "",
+
+    vod_actor: item.vod_actor || "",
+    vod_director: item.vod_director || "",
+
+    vod_en: item.vod_en || "",
+    vod_time: item.vod_time || "",
+
+    vod_douban_score:
+      item.vod_douban_score ||
+      item.vod_score ||
+      "",
+
+    vod_subtitle: item.vod_subtitle || "",
+
+    vod_play_from: item.vod_play_from || "",
+    vod_play_url: item.vod_play_url || "",
+  };
+}
